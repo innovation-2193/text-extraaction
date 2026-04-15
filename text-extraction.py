@@ -227,10 +227,11 @@ def process_docx(file_buffer):
             return pages
 
         # ========================================================
-        # --- เริ่มส่วนที่แก้ไข: หา Header/Footer ที่ใช้งานจริงเท่านั้น ---
+        # --- เริ่มส่วนที่แก้ไข: บังคับเลือก Header/Footer ตัวหลัก "เพียงไฟล์เดียว" ---
         # ========================================================
-        active_headers = []
-        active_footers =[]
+        active_header_file = None
+        active_footer_file = None
+        
         try:
             doc_root = ET.fromstring(docx_zip.read("word/document.xml"))
             rels_root = ET.fromstring(docx_zip.read("word/_rels/document.xml.rels"))
@@ -240,56 +241,79 @@ def process_docx(file_buffer):
             for rel in rels_root.findall(".//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"):
                 rel_map[rel.get("Id")] = rel.get("Target")
                 
-            # ค้นหา ID ที่ถูกอ้างอิงและใช้งานจริงในเอกสารหน้าปัจจุบัน
-            for ref in doc_root.findall(f".//{w_tag('headerReference')}"):
-                r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
-                if r_id in rel_map and rel_map[r_id] not in active_headers:
-                    active_headers.append(rel_map[r_id])
+            body = doc_root.find(f".//{w_tag('body')}")
+            if body is not None:
+                # หา section ทั้งหมดในเอกสาร
+                sectPrs = body.findall(f".//{w_tag('sectPr')}")
+                if sectPrs:
+                    # เลือกเฉพาะ Section "อันสุดท้าย" (ข้ามพวก Section Break เก่าๆ ที่ซ่อนอยู่กลางไฟล์ทิ้งให้หมด)
+                    main_sect = sectPrs[-1]
                     
-            for ref in doc_root.findall(f".//{w_tag('footerReference')}"):
-                r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
-                if r_id in rel_map and rel_map[r_id] not in active_footers:
-                    active_footers.append(rel_map[r_id])
+                    # 1. หา Header (เล็งหา type="default" ก่อน)
+                    for ref in main_sect.findall(f".//{w_tag('headerReference')}"):
+                        if ref.get(w_tag('type')) == 'default':
+                            r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                            if r_id in rel_map:
+                                active_header_file = rel_map[r_id]
+                                break
+                    # ถ้าไม่มี default ให้เอาอันแรกสุดที่ใช้ใน section หลัก
+                    if not active_header_file:
+                        for ref in main_sect.findall(f".//{w_tag('headerReference')}"):
+                            r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                            if r_id in rel_map:
+                                active_header_file = rel_map[r_id]
+                                break
+
+                    # 2. หา Footer (เล็งหา type="default" ก่อน)
+                    for ref in main_sect.findall(f".//{w_tag('footerReference')}"):
+                        if ref.get(w_tag('type')) == 'default':
+                            r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                            if r_id in rel_map:
+                                active_footer_file = rel_map[r_id]
+                                break
+                    if not active_footer_file:
+                        for ref in main_sect.findall(f".//{w_tag('footerReference')}"):
+                            r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                            if r_id in rel_map:
+                                active_footer_file = rel_map[r_id]
+                                break
         except Exception:
             pass
 
-        # กรองเอาเฉพาะไฟล์ที่มีอยู่จริงใน zip
-        if active_headers:
-            header_files =[f"word/{h}" if not h.startswith("word/") else h for h in active_headers]
-            header_files =[h for h in header_files if h in docx_zip.namelist()]
-        else:
-            # สำรองกรณีอ่าน xml ไม่เจอ
-            header_files = sorted([f for f in docx_zip.namelist() if re.match(r"^word/header\d+\.xml$", f)])
+        # บังคับเก็บไฟล์ที่จะอ่านไว้แค่ 1 ตัวเท่านั้น
+        header_files =[]
+        if active_header_file:
+            hf = f"word/{active_header_file}" if not active_header_file.startswith("word/") else active_header_file
+            if hf in docx_zip.namelist():
+                header_files.append(hf)
+                
+        footer_files =[]
+        if active_footer_file:
+            ff = f"word/{active_footer_file}" if not active_footer_file.startswith("word/") else active_footer_file
+            if ff in docx_zip.namelist():
+                footer_files.append(ff)
+
+        # Fallback กันเหนียวสุดๆ: ถ้าหาไม่เจอจริงๆ ให้หยิบไฟล์ลำดับแรกมาใช้ (แค่ไฟล์เดียว)
+        if not header_files:
+            found = sorted([f for f in docx_zip.namelist() if re.match(r"^word/header\d+\.xml$", f)])
+            if found: header_files.append(found[0])
             
-        if active_footers:
-            footer_files =[f"word/{f}" if not f.startswith("word/") else f for f in active_footers]
-            footer_files =[f for f in footer_files if f in docx_zip.namelist()]
-        else:
-            # สำรองกรณีอ่าน xml ไม่เจอ
-            footer_files = sorted([f for f in docx_zip.namelist() if re.match(r"^word/footer\d+\.xml$", f)])
+        if not footer_files:
+            found = sorted([f for f in docx_zip.namelist() if re.match(r"^word/footer\d+\.xml$", f)])
+            if found: footer_files.append(found[0])
         # ========================================================
         # --- สิ้นสุดส่วนที่แก้ไข ---
         # ========================================================
 
-        # 1. ดึงข้อความ Header ชุดตั้งต้น (Master Header)
+        # 1. สกัดข้อความ Header (ดึงมาบรรทัดเดียว ไม่มีการเอาไฟล์อื่นมาต่อท้ายแล้ว)
         master_header = ""
-        seen_headers = set()
-        for h in header_files:
-            extracted = extract_raw_from_xml(h)
-            trimmed = extracted.strip()
-            if trimmed and trimmed not in seen_headers:
-                seen_headers.add(trimmed)
-                master_header += extracted + "\n"
+        if header_files:
+            master_header = extract_raw_from_xml(header_files[0]).strip()
                 
-        # 2. ดึงข้อความ Footer ชุดตั้งต้น (Master Footer)
+        # 2. สกัดข้อความ Footer
         master_footer = ""
-        seen_footers = set()
-        for f in footer_files:
-            extracted = extract_raw_from_xml(f)
-            trimmed = extracted.strip()
-            if trimmed and trimmed not in seen_headers and trimmed not in seen_footers:
-                seen_footers.add(trimmed)
-                master_footer += extracted + "\n"
+        if footer_files:
+            master_footer = extract_raw_from_xml(footer_files[0]).strip()
 
         # 3. สกัดเนื้อหาหลักออกเป็นรายหน้า (Pages)
         pages = extract_pages_from_xml("word/document.xml")
@@ -297,7 +321,7 @@ def process_docx(file_buffer):
         # เพิ่มเชิงอรรถ/อ้างอิง ไว้ที่ท้ายสุดของเอกสาร
         notes_text = extract_raw_from_xml("word/footnotes.xml") + extract_raw_from_xml("word/endnotes.xml")
         if notes_text.strip() and pages:
-            pages[-1] += "\n\n--- [เชิงอรรถ/อ้างอิง] ---\n" + notes_text.strip()
+            pages[-1] += "\n\n---[เชิงอรรถ/อ้างอิง] ---\n" + notes_text.strip()
 
         # ===============================================
         # ฟังก์ชันปรับเปลี่ยนตัวเลขหน้า (สำหรับทั้ง Header และ Footer)
