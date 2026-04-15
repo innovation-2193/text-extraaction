@@ -226,10 +226,54 @@ def process_docx(file_buffer):
                 pages.append(current_page_text)
             return pages
 
+        # ========================================================
+        # --- เริ่มส่วนที่แก้ไข: หา Header/Footer ที่ใช้งานจริงเท่านั้น ---
+        # ========================================================
+        active_headers = []
+        active_footers =[]
+        try:
+            doc_root = ET.fromstring(docx_zip.read("word/document.xml"))
+            rels_root = ET.fromstring(docx_zip.read("word/_rels/document.xml.rels"))
+            
+            # ดึงความสัมพันธ์ ID -> ชื่อไฟล์
+            rel_map = {}
+            for rel in rels_root.findall(".//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"):
+                rel_map[rel.get("Id")] = rel.get("Target")
+                
+            # ค้นหา ID ที่ถูกอ้างอิงและใช้งานจริงในเอกสารหน้าปัจจุบัน
+            for ref in doc_root.findall(f".//{w_tag('headerReference')}"):
+                r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                if r_id in rel_map and rel_map[r_id] not in active_headers:
+                    active_headers.append(rel_map[r_id])
+                    
+            for ref in doc_root.findall(f".//{w_tag('footerReference')}"):
+                r_id = ref.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                if r_id in rel_map and rel_map[r_id] not in active_footers:
+                    active_footers.append(rel_map[r_id])
+        except Exception:
+            pass
+
+        # กรองเอาเฉพาะไฟล์ที่มีอยู่จริงใน zip
+        if active_headers:
+            header_files =[f"word/{h}" if not h.startswith("word/") else h for h in active_headers]
+            header_files =[h for h in header_files if h in docx_zip.namelist()]
+        else:
+            # สำรองกรณีอ่าน xml ไม่เจอ
+            header_files = sorted([f for f in docx_zip.namelist() if re.match(r"^word/header\d+\.xml$", f)])
+            
+        if active_footers:
+            footer_files =[f"word/{f}" if not f.startswith("word/") else f for f in active_footers]
+            footer_files =[f for f in footer_files if f in docx_zip.namelist()]
+        else:
+            # สำรองกรณีอ่าน xml ไม่เจอ
+            footer_files = sorted([f for f in docx_zip.namelist() if re.match(r"^word/footer\d+\.xml$", f)])
+        # ========================================================
+        # --- สิ้นสุดส่วนที่แก้ไข ---
+        # ========================================================
+
         # 1. ดึงข้อความ Header ชุดตั้งต้น (Master Header)
         master_header = ""
         seen_headers = set()
-        header_files = sorted([f for f in docx_zip.namelist() if re.match(r"^word/header\d+\.xml$", f)])
         for h in header_files:
             extracted = extract_raw_from_xml(h)
             trimmed = extracted.strip()
@@ -240,7 +284,6 @@ def process_docx(file_buffer):
         # 2. ดึงข้อความ Footer ชุดตั้งต้น (Master Footer)
         master_footer = ""
         seen_footers = set()
-        footer_files = sorted([f for f in docx_zip.namelist() if re.match(r"^word/footer\d+\.xml$", f)])
         for f in footer_files:
             extracted = extract_raw_from_xml(f)
             trimmed = extracted.strip()
