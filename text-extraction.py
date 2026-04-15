@@ -170,11 +170,11 @@ def process_docx(file_buffer):
             current_page_text = ""
             
             for p in root.findall(f".//{w_tag('p')}"):
-                p_text = ""
-                numPr = p.find(f".//{w_tag('numPr')}")
                 list_num_id = None
                 list_ilvl = 0
+                prefix = "" # แยกตัวแปรเลขหัวข้อออกมาก่อน
                 
+                numPr = p.find(f".//{w_tag('numPr')}")
                 if numPr is not None:
                     numIdNode = numPr.find(f"{w_tag('numId')}")
                     ilvlNode = numPr.find(f"{w_tag('ilvl')}")
@@ -189,26 +189,38 @@ def process_docx(file_buffer):
                             list_ilvl = styles_data[style_id]['ilvl']
                             
                 if list_num_id and list_num_id != "0" and numbering_data:
-                    p_text += get_list_string(list_num_id, list_ilvl, numbering_data, list_counters)
+                    prefix = get_list_string(list_num_id, list_ilvl, numbering_data, list_counters)
                     
+                temp_text = "" # เก็บข้อความชั่วคราว (ยังไม่รวมเลขหัวข้อ)
+                
                 for elem in p.iter():
                     # ตรวจจับการขึ้นหน้าใหม่ (Page Break)
                     if elem.tag == w_tag('lastRenderedPageBreak') or (elem.tag == w_tag('br') and elem.attrib.get(w_tag('type')) == 'page'):
-                        if current_page_text.strip() or p_text.strip():
-                            pages.append(current_page_text + p_text)
-                        current_page_text = ""
-                        p_text = ""
+                        if temp_text.strip():
+                            # กรณี 1: มีข้อความพิมพ์มาก่อนแล้วค่อยโดนตัดหน้ากลางอากาศ -> ให้เอาเลขหัวข้อแปะรวมกับหน้าเดิม
+                            if current_page_text.strip() or temp_text.strip():
+                                pages.append(current_page_text + prefix + temp_text)
+                            current_page_text = ""
+                            prefix = "" # ใช้เลขหัวข้อไปแล้วสำหรับหน้าก่อน
+                        else:
+                            # กรณี 2: โดนตัดหน้าตั้งแต่เริ่มย่อหน้า (ไม่มีข้อความพิมพ์มาก่อน) -> ให้ผลักเลขหัวข้อ(prefix) ไปเตรียมไว้สำหรับหน้าถัดไป
+                            if current_page_text.strip():
+                                pages.append(current_page_text)
+                            current_page_text = ""
+                            
+                        temp_text = ""
                     elif elem.tag == w_tag('t') and elem.text:
-                        p_text += elem.text
+                        temp_text += elem.text
                     elif elem.tag == w_tag('tab'):
-                        p_text += "\t"
-                    elif elem.tag in [w_tag('br'), w_tag('cr')]:
+                        temp_text += "\t"
+                    elif elem.tag in[w_tag('br'), w_tag('cr')]:
                         if elem.attrib.get(w_tag('type')) != 'page':
-                            p_text += "\n"
+                            temp_text += "\n"
                     elif elem.tag == w_tag('sym'):
-                        p_text += "•"
+                        temp_text += "•"
                         
-                current_page_text += p_text + "\n"
+                # ประกอบร่างเมื่อจบพารากราฟ
+                current_page_text += prefix + temp_text + "\n"
                 
             if current_page_text.strip():
                 pages.append(current_page_text)
